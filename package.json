@@ -1,0 +1,9 @@
+{
+  "name": "k-router-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "k-router": "./bin/cli.js"
+  },
+  "dependencies": {}
+}
