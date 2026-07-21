@@ -278,6 +278,7 @@ async function _handleCommand(rawInput) {
     case '/memory': {
       const sub = args.split(' ')[0];
       const rest = args.slice(sub.length).trim();
+      console.log("DEBUG SUB =", JSON.stringify(sub));
 
       if (!sub || sub === 'show') {
         const personal  = memory.getPersonal();
