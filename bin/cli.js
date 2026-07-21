@@ -278,7 +278,9 @@ async function _handleCommand(rawInput) {
     case '/memory': {
       const sub = args.split(' ')[0];
       const rest = args.slice(sub.length).trim();
-      console.log("DEBUG SUB =", JSON.stringify(sub));
+      console.log("command =", command);
+      console.log("args    =", args);
+      console.log("sub     =", sub);
 
       if (!sub || sub === 'show') {
         const personal  = memory.getPersonal();
@@ -356,24 +358,25 @@ async function _handleCommand(rawInput) {
     console.log(`${C_RED}WARNING!${C_RESET}`);
     console.log("Semua memory lokal dan Supabase akan dihapus.");
     console.log("");
-
-  rl.question("Ketik YES untuk melanjutkan: ", async(answer) => {
+    rl.question("Ketik YES untuk melanjutkan: ", async(answer) => {
 
     if(answer !== "YES"){
       console.log("Dibatalkan.\n");
       _prompt();
       return;
       }
+     
       try{
-
       await memory.purgeAllMemory();
       console.log(`${C_GREEN}✓ Semua memory berhasil dihapus.${C_RESET}\n`);
-      }catch(err){
+      }
+      catch(err){
       console.log(`${C_RED}Gagal menghapus memory:${C_RESET}`,err.message);
       }
       _prompt();
      });
-     return;
+     
+      return;
      }
 
       if (sub === 'skip') {
