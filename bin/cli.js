@@ -351,13 +351,51 @@ async function _handleCommand(rawInput) {
         break;
       }
 
+      if (sub === 'purge') {
+
+  console.log(`${C_RED}WARNING!${C_RESET}`);
+  console.log("Semua memory lokal dan Supabase akan dihapus.");
+  console.log("");
+
+  rl.question("Ketik YES untuk melanjutkan: ", async(answer) => {
+
+    if(answer !== "YES"){
+
+      console.log("Dibatalkan.\n");
+
+      _prompt();
+
+      return;
+
+    }
+
+    try{
+
+      await memory.purgeAllMemory();
+
+      console.log(`${C_GREEN}✓ Semua memory berhasil dihapus.${C_RESET}\n`);
+
+    }catch(err){
+
+      console.log(`${C_RED}Gagal menghapus memory:${C_RESET}`,err.message);
+
+    }
+
+    _prompt();
+
+  });
+
+  return;
+
+      }
+
       if (sub === 'skip') {
         memory.recordSessionStart();
         console.log(`${C_MUTED}Memory setup dilewati. Ketik /memory setup kapanpun.${C_RESET}\n`);
         break;
       }
 
-      console.log(`${C_YELLOW}Subcommand: show | setup | learn | decide | note | skip${C_RESET}\n`);
+      console.log(`${C_YELLOW}Subcommand: show | setup | learn | decide | note | skip | purge${C_RESET}\n`);
       break;
     }
 
