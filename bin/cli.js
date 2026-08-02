@@ -5,7 +5,7 @@
  * Location: /bin/cli.js
  * 
  * Jantung kendali utama antarmuka pengguna berbasis teks.
- * Mengelola interaksi asinkron tanpa hambatan keyboard (Anti-Stuttering).
+ * Mengintegrasikan ReAct Loop, HITL Interceptor, Diff Preview, dan Host Filesystem.
  */
 
 import readline from 'readline';
@@ -13,17 +13,22 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-// Impor seluruh pustaka internal K-Router yang sudah kita bangun
+// Internal modules
 import { getState, setState } from '../lib/state.js';
-import * as auth from '../lib/auth.js';
-import * as circuit from '../lib/circuit.js';
-import * as logger from '../lib/logger.js';
+import * as auth      from '../lib/auth.js';
+import * as circuit   from '../lib/circuit.js';
+import * as logger    from '../lib/logger.js';
 import * as providers from '../lib/providers.js';
-import * as core from '../lib/core.js';
+import * as core      from '../lib/core.js';
+import * as host      from '../lib/host.js';
+import * as memory    from '../lib/memory.js';
+import * as reactLoop from '../lib/react-loop.js';
+import * as plan      from '../lib/plan.js';
+import * as diff      from '../lib/diff.js';
 
 const CONFIG_PATH = path.join(os.homedir(), '.krouter_config.json');
 
-// Kunci Kode Warna ANSI Premium (Minimalist-UI Terjemahan Terminal)
+// Kunci Kode Warna ANSI Premium
 const C_RESET   = '\x1b[0m';
 const C_BOLD    = '\x1b[1m';
 const C_RED     = '\x1b[31m';
@@ -32,9 +37,8 @@ const C_YELLOW  = '\x1b[33m';
 const C_BLUE    = '\x1b[34m';
 const C_MAGENTA = '\x1b[35m';
 const C_CYAN    = '\x1b[36m';
-const C_MUTED   = '\x1b[90m'; // Off-white/Gray text style
+const C_MUTED   = '\x1b[90m';
 
-// Memori Percakapan Sementara Sesi Ini
 let conversationHistory = [];
 let rl = null;
 let currentBackendUrl = process.env.KROUTER_BACKEND_URL || '';
@@ -46,12 +50,10 @@ async function boot() {
   console.log(`${C_CYAN}${C_BOLD}=== K-ROUTER AUTONOMOUS CLI ENGINE v2026 ===${C_RESET}`);
   console.log(`${C_MUTED}Initializing ecosystem components...${C_RESET}\n`);
 
-  // Sambungkan kabel subscriber dari logger ke terminal display output
   logger.onLog((entry, formatted) => {
     console.log(formatted);
   });
 
-  // Load konfigurasi tambahan (Backend URL) dari file lokal rahasia
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -65,8 +67,24 @@ async function boot() {
     prompt: `${C_GREEN}${C_BOLD}k-router> ${C_RESET}`
   });
 
-  // Jalankan First Boot Hydration Protocol untuk Token
   const hasToken = auth.hydrate();
+  const hostSession = host.init();
+
+  if (hostSession.hasSession) {
+    logger.info(`Session file aktif: ${hostSession.activePath} (${hostSession.fileCount} file loaded)`);
+  }
+
+  if (memory.isFirstBoot()) {
+    console.log(`\n${C_YELLOW}╔════════════════════════════════════════╗`);
+    console.log(`║     FIRST BOOT — Memory Setup          ║`);
+    console.log(`╚════════════════════════════════════════╝${C_RESET}`);
+    console.log(`${C_MUTED}Agent perlu mengenalmu. Ketik /memory setup untuk mulai.${C_RESET}\n`);
+  } else {
+    const sessionCtx = memory.recordSessionStart();
+    if (sessionCtx.isLate) {
+      console.log(`${C_YELLOW}⚠ Late session (${sessionCtx.currentTime}). Jaga kesehatan ya.${C_RESET}\n`);
+    }
+  }
 
   if (!currentBackendUrl) {
     rl.question(`${C_YELLOW}Masukkan Absolute Target URL Vercel Backend Lo:${C_RESET} `, (url) => {
@@ -114,7 +132,7 @@ function _checkTokenSetup(hasToken) {
   }
 }
 
-// ── 2. The Interactive REPL Loop ───────────────────────────────────────────
+// ── 2. The Interactive REPL Loop & HITL Interceptor ────────────────────────
 
 function _startReplLoop() {
   console.log(`\n${C_GREEN}K-Router CLI Siap Digunakan. Ketik ${C_BOLD}/help${C_RESET}${C_GREEN} untuk melihat menu commands.${C_RESET}\n`);
@@ -127,11 +145,34 @@ function _startReplLoop() {
       return;
     }
 
-    // Advanced Command Parsing Layer
+    // A. HITL Approval Interceptor — Tangkap input y / n / c pas agent lagi pause[span_13](start_span)[span_13](end_span)
+    if (reactLoop.isPendingApproval()) {
+      const lower = input.toLowerCase();
+      if (lower === 'y' || lower === 'yes') {
+        reactLoop.resolveApproval('y');
+      } else if (lower === 'n' || lower === 'no') {
+        reactLoop.resolveApproval('n');
+      } else if (lower.startsWith('c ') || lower === 'c') {
+        const comment = input.slice(1).trim();
+        reactLoop.resolveApproval('c', comment);
+      } else {
+        console.log(`${C_YELLOW}[!] Input tidak valid untuk HITL. Ketik: y (approve), n (reject), atau c [comment] (revise)${C_RESET}`);
+      }
+      rl.prompt();
+      return;
+    }
+
+    // B. Guard agar input chat tidak merusak agent yang sedang berjalan sibuk[span_14](start_span)[span_14](end_span)
+    if (reactLoop.isRunning() && input !== '/exit' && input !== '/clear') {
+      console.log(`${C_YELLOW}[!] Autonomous agent sedang eksekusi task. Tunggu sampai selesai atau minta persetujuan HITL.${C_RESET}`);
+      rl.prompt();
+      return;
+    }
+
+    // C. Advanced Command Parsing Layer
     if (input.startsWith('/')) {
       await _handleCommand(input);
     } else {
-      // Input teks biasa: Kirim langsung sebagai instruksi chat AI
       await _handleChatInput(input);
     }
     rl.prompt();
@@ -151,13 +192,20 @@ async function _handleCommand(rawInput) {
   switch (command) {
     case '/help':
       console.log(`\n${C_BOLD}Daftar Perintah Resmi K-Router CLI:${C_RESET}`);
-      console.log(`  ${C_CYAN}/help${C_RESET}           - Menampilkan panduan bantuan menu ini`);
-      console.log(`  ${C_CYAN}/models${C_RESET}         - Memeriksa status kesehatan live seluruh provider AI`);
-      console.log(`  ${C_CYAN}/use [alias]${C_RESET}   - Mengunci satu rute provider AI secara manual`);
-      console.log(`  ${C_CYAN}/search [query]${C_RESET} - Melakukan pencarian data real-time via Tavily`);
-      console.log(`  ${C_CYAN}/dashboard${C_RESET}      - Menarik statistik penggunaan dari data Supabase`);
-      console.log(`  ${C_CYAN}/clear${C_RESET}          - Membersihkan riwayat layar monitor terminal`);
-      console.log(`  ${C_CYAN}/exit${C_RESET}           - Mematikan aplikasi secara aman\n`);
+      console.log(`  ${C_CYAN}/task [deskripsi]${C_RESET}  - Menjalankan coding agent otonom (ReAct Loop + HITL)`);
+      console.log(`  ${C_CYAN}/plan [deskripsi]${C_RESET}  - Generate & lihat preview execution plan JSON tanpa eksekusi`);
+      console.log(`  ${C_CYAN}/diff [file]${C_RESET}       - Tampilkan unified diff antara cache memori vs file di disk`);
+      console.log(`  ${C_CYAN}/help${C_RESET}              - Menampilkan panduan bantuan menu ini`);
+      console.log(`  ${C_CYAN}/models${C_RESET}            - Memeriksa status kesehatan live seluruh provider AI`);
+      console.log(`  ${C_CYAN}/use [alias]${C_RESET}      - Mengunci satu rute provider AI secara manual`);
+      console.log(`  ${C_CYAN}/search [query]${C_RESET}    - Melakukan pencarian data real-time via Tavily`);
+      console.log(`  ${C_CYAN}/dashboard${C_RESET}         - Menarik statistik penggunaan dari data Supabase`);
+      console.log(`  ${C_CYAN}/open [path]${C_RESET}      - Buka folder project, tampil struktur file`);
+      console.log(`  ${C_CYAN}/ls [path]${C_RESET}        - List isi folder aktif`);
+      console.log(`  ${C_CYAN}/read [file]${C_RESET}      - Baca file dan inject ke context AI`);
+      console.log(`  ${C_CYAN}/context [clear]${C_RESET}  - Tampil session aktif / hapus file dari context`);
+      console.log(`  ${C_CYAN}/memory${C_RESET}            - Kelola memory agent (setup, show, learn, decide)`);
+      console.log(`  ${C_CYAN}/exit${C_RESET}              - Mematikan aplikasi secara aman\n`);
       break;
 
     case '/clear':
@@ -167,6 +215,67 @@ async function _handleCommand(rawInput) {
     case '/exit':
       rl.close();
       break;
+
+    case '/task': {
+      if (!args) {
+        console.log(`${C_RED}Error: Deskripsi task tidak boleh kosong. Contoh: /task refactor fungsi validasi di utils.js${C_RESET}\n`);
+        break;
+      }
+      if (reactLoop.isRunning()) {
+        console.log(`${C_YELLOW}[!] Task lain sedang berjalan. Tunggu hingga selesai.${C_RESET}\n`);
+        break;
+      }
+      // Mulai ReAct loop secara asinkron[span_15](start_span)[span_15](end_span)
+      reactLoop.startTask(currentBackendUrl, args, (msg) => {
+        console.log(msg);
+        // Kalau agent pause nunggu HITL, munculin ulang REPL prompt biar lo tau bisa input y/n/c[span_16](start_span)[span_16](end_span)
+        if (reactLoop.isPendingApproval() && rl) {
+          rl.prompt();
+        }
+      });
+      break;
+    }
+
+    case '/plan': {
+      if (!args) {
+        console.log(`${C_RED}Error: Deskripsi task tidak boleh kosong. Contoh: /plan tambahkan error handling di api.js${C_RESET}\n`);
+        break;
+      }
+      console.log(`\n${C_CYAN}[→] Generating execution plan untuk: "${args}"...${C_RESET}`);
+      const fileContext = host.buildContextString();
+      const planRes = await plan.generatePlan(currentBackendUrl, args, fileContext);
+      if (!planRes.ok) {
+        console.log(`${C_RED}[✗] Gagal membuat plan: ${planRes.error}${C_RESET}\n`);
+      } else {
+        console.log(plan.formatPlan(planRes.plan));
+      }
+      break;
+    }
+
+    case '/diff': {
+      if (!args) {
+        console.log(`${C_RED}Error: Nama file wajib disertakan. Contoh: /diff app.js${C_RESET}\n`);
+        break;
+      }
+      const cached = host.getFileContent(args);
+      if (cached === null) {
+        console.log(`${C_RED}Error: File "${args}" belum ada di context cache. Gunakan /read ${args} terlebih dahulu.${C_RESET}\n`);
+        break;
+      }
+      try {
+        const fullPath = host.resolvePath(args);
+        if (!fs.existsSync(fullPath)) {
+          console.log(`${C_YELLOW}File "${args}" belum ada di disk (file baru di cache).${C_RESET}\n`);
+          break;
+        }
+        const diskContent = fs.readFileSync(fullPath, 'utf8');
+        const diffRes = diff.generateDiff(args, cached, diskContent);
+        console.log(diffRes.preview);
+      } catch (e) {
+        console.log(`${C_RED}Gagal membandingkan diff: ${e.message}${C_RESET}\n`);
+      }
+      break;
+    }
 
     case '/use': {
       if (!args) {
@@ -250,16 +359,211 @@ async function _handleCommand(rawInput) {
       break;
     }
 
+    case '/memory': {
+      const sub = args.split(' ')[0];
+      const rest = args.slice(sub.length).trim();
+
+      if (!sub || sub === 'show') {
+        const personal  = memory.getPersonal();
+        const emotional = memory.getEmotional();
+        console.log(`\n${C_BOLD}Personal Memory:${C_RESET}`);
+        console.log(`  Nickname  : ${personal.nickname || '(belum diset)'}`);
+        console.log(`  Stack     : ${(personal.stack || []).join(', ') || '(kosong)'}`);
+        console.log(`  Work hours: ${personal.work_hours ? personal.work_hours.start + ' - ' + personal.work_hours.end : '-'}`);
+        console.log(`  Late after: ${emotional.late_threshold || '00:00'}`);
+        console.log(`  Sessions  : ${emotional.session_count || 0}`);
+        console.log(`  Avg session: ${emotional.avg_session_min || 0} min\n`);
+        break;
+      }
+
+      if (sub === 'setup') {
+        console.log(`\n${C_GREEN}Memory Setup — jawab beberapa pertanyaan:${C_RESET}\n`);
+        rl.question(`  Nama panggilan lo: `, (nickname) => {
+          rl.question(`  Tech stack lo (pisah koma): `, (stackStr) => {
+            rl.question(`  Jam mulai kerja (HH:MM): `, (workStart) => {
+              rl.question(`  Jam selesai kerja (HH:MM): `, (workEnd) => {
+                rl.question(`  Jam berapa dianggap "late session" (HH:MM, default 00:00): `, (late) => {
+                  const stack = stackStr.split(',').map(s => s.trim()).filter(Boolean);
+                  memory.savePersonal({
+                    nickname:   nickname.trim() || null,
+                    stack:      stack,
+                    work_hours: { start: workStart.trim() || '09:00', end: workEnd.trim() || '23:00' }
+                  });
+                  memory.setLateThreshold(late.trim() || '00:00');
+                  memory.recordSessionStart();
+                  console.log(`\n${C_GREEN}✓ Memory tersimpan. Agent sekarang mengenalmu.${C_RESET}\n`);
+                  rl.prompt();
+                });
+              });
+            });
+          });
+        });
+        return;
+      }
+
+      if (sub === 'learn') {
+        const parts = rest.split('|');
+        if (parts.length < 2) {
+          console.log(`${C_YELLOW}Usage: /memory learn [error summary] | [solution]${C_RESET}\n`);
+          break;
+        }
+        await memory.saveLearning(parts[0].trim(), parts[1].trim(), null, 90);
+        console.log(`${C_GREEN}✓ Learning disimpan ke Supabase.${C_RESET}\n`);
+        break;
+      }
+
+      if (sub === 'decide') {
+        const parts = rest.split('|');
+        if (parts.length < 2) {
+          console.log(`${C_YELLOW}Usage: /memory decide [decision] | [reason]${C_RESET}\n`);
+          break;
+        }
+        await memory.saveDecision(null, parts[0].trim(), parts[1].trim(), null);
+        console.log(`${C_GREEN}✓ Decision disimpan ke Supabase.${C_RESET}\n`);
+        break;
+      }
+
+      if (sub === 'note') {
+        if (!rest) {
+          console.log(`${C_YELLOW}Usage: /memory note [catatan tentang kamu]${C_RESET}\n`);
+          break;
+        }
+        memory.addPersonalityNote(rest);
+        console.log(`${C_GREEN}✓ Note ditambahkan ke personal memory.${C_RESET}\n`);
+        break;
+      }
+
+      if (sub === 'skip') {
+        memory.recordSessionStart();
+        console.log(`${C_MUTED}Memory setup dilewati. Ketik /memory setup kapanpun.${C_RESET}\n`);
+        break;
+      }
+
+      console.log(`${C_YELLOW}Subcommand: show | setup | learn | decide | note | skip${C_RESET}\n`);
+      break;
+    }
+
+    case '/effort': {
+      const valid = ['low', 'medium', 'high'];
+      if (!args || !valid.includes(args.toLowerCase())) {
+        console.log(`${C_YELLOW}Usage: /effort [low|medium|high]${C_RESET}\n`);
+        break;
+      }
+      setState({ effort: args.toLowerCase() }, { caller: 'cli.cmdEffort' });
+      console.log(`${C_GREEN}Effort dikunci ke: ${args.toLowerCase()}${C_RESET}\n`);
+      break;
+    }
+
+    case '/open': {
+      const result = host.openPath(args);
+      if (!result.ok) {
+        console.log(`${C_RED}Error: ${result.error}${C_RESET}\n`);
+        break;
+      }
+      console.log(`\n${C_GREEN}Opened: ${result.activePath}${C_RESET}`);
+      if (result.entries && result.entries.length > 0) {
+        console.log(`${C_BOLD}\nContents:${C_RESET}`);
+        result.entries.forEach(e => {
+          if (e.type === 'dir') {
+            console.log(`  ${C_CYAN}[dir]${C_RESET}  ${e.name}`);
+          } else {
+            const tag = e.readable ? '' : ` ${C_RED}(too large)${C_RESET}`;
+            console.log(`  ${C_MUTED}[file]${C_RESET} ${e.name} ${C_MUTED}${e.size}${C_RESET}${tag}`);
+          }
+        });
+      } else {
+        console.log(`${C_MUTED}(folder kosong atau tidak ada file yang didukung)${C_RESET}`);
+      }
+      console.log('');
+      break;
+    }
+
+    case '/ls': {
+      const result = host.listCurrent(args || null);
+      if (!result.ok) {
+        console.log(`${C_RED}Error: ${result.error}${C_RESET}\n`);
+        break;
+      }
+      console.log(`\n${C_BOLD}${result.activePath}${C_RESET}`);
+      result.entries.forEach(e => {
+        if (e.type === 'dir') {
+          console.log(`  ${C_CYAN}[dir]${C_RESET}  ${e.name}`);
+        } else {
+          const tag = e.readable ? '' : ` ${C_RED}(too large)${C_RESET}`;
+          console.log(`  ${C_MUTED}[file]${C_RESET} ${e.name} ${C_MUTED}${e.size}${C_RESET}${tag}`);
+        }
+      });
+      console.log('');
+      break;
+    }
+
+    case '/read': {
+      if (!args) {
+        console.log(`${C_RED}Error: Nama file wajib disertakan. Contoh: /read app.js${C_RESET}\n`);
+        break;
+      }
+      const result = host.readFile(args);
+      if (!result.ok) {
+        console.log(`${C_RED}Error: ${result.error}${C_RESET}\n`);
+        break;
+      }
+      if (result.changed) {
+        console.log(`${C_YELLOW}⚠ File berubah sejak terakhir dibaca — versi baru dimuat.${C_RESET}`);
+      }
+      console.log(`${C_GREEN}✓ ${result.filename} dimuat (${result.size})${C_RESET}`);
+      if (result.overLimit) {
+        console.log(`${C_YELLOW}⚠ Total context melebihi 200KB (${result.totalContext}). Beberapa provider mungkin memotong response.${C_RESET}`);
+      } else {
+        console.log(`${C_MUTED}  Total context: ${result.totalContext}${C_RESET}`);
+      }
+      console.log('');
+      break;
+    }
+
+    case '/context': {
+      if (args === 'clear') {
+        host.clearContext();
+        console.log(`${C_GREEN}Context cache berhasil dibersihkan.${C_RESET}\n`);
+        break;
+      }
+      const result = host.getContext();
+      if (!result.activePath) {
+        console.log(`${C_MUTED}Belum ada session aktif. Gunakan /open [path]${C_RESET}\n`);
+        break;
+      }
+      console.log(`\n${C_BOLD}Session aktif:${C_RESET} ${result.activePath}`);
+      console.log(`${C_BOLD}Total context:${C_RESET} ${result.totalContext}${result.overLimit ? ` ${C_YELLOW}(over limit)${C_RESET}` : ''}`);
+      if (result.files.length === 0) {
+        console.log(`${C_MUTED}Belum ada file yang dimuat. Gunakan /read [filename].${C_RESET}`);
+      } else {
+        console.log(`${C_BOLD}\nFile loaded:${C_RESET}`);
+        result.files.forEach(f => {
+          console.log(`  ${C_GREEN}✓${C_RESET} ${f.filename} ${C_MUTED}(${f.size} · ${f.fingerprint})${C_RESET}`);
+        });
+      }
+      console.log('');
+      break;
+    }
+
     default:
-      console.log(`${C_RED}Command tidak dikenal. Ketik /help untuk melihat daftar rute perintah.${C_RESET}\n`);
+      console.log(`${C_RED}Command tidak dikenal. Ketik /help untuk melihat daftar perintah.${C_RESET}\n`);
   }
 }
 
 // ── 4. Remote Chat Connection Handler ──────────────────────────────────────
 
 async function _handleChatInput(text) {
-  // Masukkan pesan user ke memori lokal sesi saat ini
-  conversationHistory.push({ role: 'user', content: text });
+  const stale = host.checkFingerprints();
+  if (stale.length > 0) {
+    stale.forEach(s => {
+      console.log(`${C_YELLOW}⚠ ${s.filename} telah ${s.reason} sejak terakhir dimuat. Reload dengan /read ${s.filename}${C_RESET}`);
+    });
+  }
+
+  const contextStr = host.buildContextString();
+  const messageToSend = contextStr ? text + '\n\n' + contextStr : text;
+
+  conversationHistory.push({ role: 'user', content: messageToSend });
 
   logger.info('Mempersiapkan rute koordinasi pipa AI...');
   
@@ -269,21 +573,18 @@ async function _handleChatInput(text) {
     if (result && result.choices && result.choices[0] && result.choices[0].message) {
       const aiResponse = result.choices[0].message;
       
-      // Tampilkan respons jawaban AI ke terminal dengan format kontras tinggi
       console.log(`\n${C_CYAN}${C_BOLD}AI Response:${C_RESET}`);
       console.log(`${aiResponse.content}\n`);
       
-      // Amankan jawaban AI ke dalam riwayat context memori jangka pendek sesi ini
       conversationHistory.push({ role: 'assistant', content: aiResponse.content });
     } else {
       throw new Error('Format balasan data JSON dari remote server tidak valid.');
     }
   } catch (err) {
     logger.error(`Gagal memproses instruksi obrolan: ${err.message}`);
-    // Jika eror total melanda, potong input terakhir dari memori agar sinkronisasi context aman
     conversationHistory.pop();
   }
 }
 
-// Menghidupkan siklus hidup aplikasi CLI secara riil
 boot();
+
