@@ -25,6 +25,7 @@ import * as memory    from '../lib/memory.js';
 import * as reactLoop from '../lib/react-loop.js';
 import * as plan      from '../lib/plan.js';
 import * as diff      from '../lib/diff.js';
+import * as writer    from '../lib/writer.js';
 
 const CONFIG_PATH = path.join(os.homedir(), '.krouter_config.json');
 
