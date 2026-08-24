@@ -5,6 +5,7 @@
  * Mengekspos fungsi internal krouter agar bisa di-import oleh aplikasi lain.
  */
 
+import 'dotenv/config';
 import { setState, getState } from './lib/state.js';
 import * as authModule from './lib/auth.js';
 import * as coreModule from './lib/core.js';
