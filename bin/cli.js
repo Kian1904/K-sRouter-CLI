@@ -30,6 +30,17 @@ import * as sync      from '../lib/sync.js';
 import * as db        from '../lib/db.js';
 import { getRequiredEnv } from '../lib/env.js';
 
+// ─── Bootstrap: pastiin KROUTER_BACKEND_URL ada ──────────────────────────────
+
+let currentBackendUrl;
+try {
+  currentBackendUrl = getRequiredEnv('KROUTER_BACKEND_URL');
+} catch {
+  console.error('\n❌ KROUTER_BACKEND_URL belum diset — isi dulu di file .env di root repo');
+  console.error('   Contoh: KROUTER_BACKEND_URL=http://localhost:3000\n');
+  process.exit(1);
+}
+
 const CONFIG_PATH = path.join(os.homedir(), '.krouter_config.json');
 
 // Kunci Kode Warna ANSI Premium
@@ -45,7 +56,7 @@ const C_MUTED   = '\x1b[90m';
 
 let conversationHistory = [];
 let rl = null;
-const currentBackendUrl = getRequiredEnv('KROUTER_BACKEND_URL');
+// currentBackendUrl sudah di-set di bootstrap block di atas
 
 // ── 1. Boot Initialization Protocol ─────────────────────────────────────────
 
