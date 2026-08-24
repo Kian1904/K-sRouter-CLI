@@ -6,5 +6,8 @@
   "bin": {
     "k-router": "./bin/cli.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "17.4.2"
+  }
 }
