@@ -5,14 +5,14 @@
  * Mengekspos fungsi internal krouter agar bisa di-import oleh aplikasi lain.
  */
 
-import 'dotenv/config';
+import {getRequiredEnv } from './lib/env.js';
 import { setState, getState } from './lib/state.js';
 import * as authModule from './lib/auth.js';
 import * as coreModule from './lib/core.js';
 import * as providersModule from './lib/providers.js';
 
 // Ambil URL default dari env atau set default lokal
-const BACKEND_URL = process.env.KROUTER_BACKEND_URL;
+const BACKEND_URL = getRequiredEnv('KROUTER_BACKEND_URL');
 if (!BACKEND_URL) throw new Error('KROUTER_BACKEND_URL env var not set');
 
 /**

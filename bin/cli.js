@@ -28,6 +28,7 @@ import * as diff      from '../lib/diff.js';
 import * as writer    from '../lib/writer.js';
 import * as sync      from '../lib/sync.js';
 import * as db        from '../lib/db.js';
+import { getRequiredEnv } from '../lib/env.js';
 
 const CONFIG_PATH = path.join(os.homedir(), '.krouter_config.json');
 
@@ -44,7 +45,7 @@ const C_MUTED   = '\x1b[90m';
 
 let conversationHistory = [];
 let rl = null;
-let currentBackendUrl = process.env.KROUTER_BACKEND_URL || '';
+const currentBackendUrl = getRequiredEnv('KROUTER_BACKEND_URL');
 
 // ── 1. Boot Initialization Protocol ─────────────────────────────────────────
 
