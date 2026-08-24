@@ -5,22 +5,24 @@
  * Mengekspos fungsi internal krouter agar bisa di-import oleh aplikasi lain.
  */
 
-import 'dotenv/config';
+import {getRequiredEnv } from './lib/env.js';
 import { setState, getState } from './lib/state.js';
 import * as authModule from './lib/auth.js';
 import * as coreModule from './lib/core.js';
 import * as providersModule from './lib/providers.js';
 
-// Ambil URL default dari env atau set default lokal
-const BACKEND_URL = process.env.KROUTER_BACKEND_URL;
-if (!BACKEND_URL) throw new Error('KROUTER_BACKEND_URL env var not set');
+// Backend URL dibaca dari .env (KROUTER_BACKEND_URL) saat fungsi dipanggil,
+// bukan saat module di-import — supaya import tetap aman tanpa .env.
+function backendUrl() {
+  return getRequiredEnv('KROUTER_BACKEND_URL');
+}
 
 /**
  * 1. Fungsi Auth SDK
  */
 export async function auth(token) {
   const cleanToken = token.trim();
-  const isValid = await authModule.verifyToken(cleanToken, BACKEND_URL);
+  const isValid = await authModule.verifyToken(cleanToken, backendUrl());
   if (!isValid) throw new Error('Authentication Failed: Token rejected by server.');
   authModule.saveToken(cleanToken);
   return true;
@@ -30,7 +32,7 @@ export async function auth(token) {
  * 2. Fungsi Pipa Chat SDK
  */
 export async function chat(messages) {
-  return await coreModule.sendChatRequest(BACKEND_URL, messages);
+  return await coreModule.sendChatRequest(backendUrl(), messages);
 }
 
 /**
@@ -49,7 +51,7 @@ export function use(alias) {
  * 4. Fungsi Status Ping SDK
  */
 export async function status() {
-  const latency = await coreModule.checkServerStatus(BACKEND_URL);
+  const latency = await coreModule.checkServerStatus(backendUrl());
   if (latency === false) throw new Error('Backend server is unreachable.');
   return latency;
 }

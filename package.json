@@ -1,13 +1,13 @@
 {
-  "name": "k-srouter",
-  "version": "1.0.0",
-  "type": "module",
-  "main": "./index.js",
-  "bin": {
-    "k-router": "./bin/cli.js"
-  },
-  "dependencies": {
-    "better-sqlite3": "^13.0.3",
-    "dotenv": "^17.4.2"
-  }
+ "name": "k-srouter",
+ "version": "1.0.0",
+ "type": "module",
+ "main": "./index.js",
+ "bin": {
+   "k-router": "./bin/cli.js"
+},
+ "dependencies": {
+  "better-sqlite3": "^13.0.3",
+  "dotenv": "^17.4.2"
+}
 }
