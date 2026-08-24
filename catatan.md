@@ -39,7 +39,7 @@ ReferenceError: __filename is not defined          ← error asli
 | 5 | 🔴 Critical | `bin/cli.js:48` | `getRequiredEnv()` top-level tanpa graceful handling |
 | 6 | 🔴 Critical | `lib/shell.js` | 6 bug sekaligus (lihat detail di bawah) |
 | 7 | 🟡 Minor | `lib/memory.js` | `clearProjectMemory()` memanggil `db.clearProjects()` yang **tidak ada** di db.js |
-| 8 | 🟢 Smell | `lib/prompt-parser.js` | Blok kode duplikat (`let parsed; try {...}` muncul 2x) — unreachable tapi berantakan |
+| 8 | 🔴 Critical | `lib/prompt-parser.js` | Blok kode duplikat di module top-level dengan `return` statement → SyntaxError, file tidak bisa di-import. Orphan module (tidak di-import siapa pun, makanya tidak ketahuan) |
 
 ### Detail bug shell.js
 1. `execFile` dipakai tapi tidak pernah di-import dari `child_process`
@@ -95,9 +95,9 @@ ReferenceError: __filename is not defined          ← error asli
 - [ ] **Isi `KROUTER_BACKEND_URL` asli** di `.env`, test `status()` ke server backend beneran
 - [ ] **Push ke remote** — local main sudah konvergen dengan origin/main, aman tanpa force
 
-### Cleanup (tidak blocker)
-- [ ] Bersihkan `~/.npmrc` — hapus 2 baris rusak (`all="low-scripts=9router"` dan `allow-scripts=9router`)
-- [ ] Hapus blok duplikat di `lib/prompt-parser.js` (~baris 130-an, `let parsed; try {...}` yang kedua)
+### Cleanup (selesai)
+- [x] Bersihkan `~/.npmrc` — hapus 2 baris rusak (backup: `~/.npmrc.bak`)
+- [x] Hapus blok duplikat di `lib/prompt-parser.js` — ternyata bukan cuma smell, blok itu bikin SyntaxError sehingga file gak bisa di-import
 - [ ] Review file yang belum diaudit mendalam: isi logika `core.js`, `auth.js`, `providers.js`, `state.js` (baru dibaca struktur-nya saja)
 
 ### Ide pengembangan
