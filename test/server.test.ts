@@ -6,6 +6,8 @@ const apps: Array<ReturnType<typeof createApp>> = [];
 
 function appWithFetch(fetchImpl: typeof fetch) {
   const app = createApp({
+    adminApiKey: 'test-admin-secret',
+    serveDashboard: false,
     providers: [{
       name: 'default', baseUrl: 'https://provider.test/v1/', apiKey: 'test-secret', models: ['demo-model'],
     }],
@@ -50,6 +52,8 @@ describe('K\'sRouter API', () => {
   it('routes each configured model to its provider URL and API key', async () => {
     const received: Array<{ url: string; authorization: string | null }> = [];
     const app = createApp({
+      adminApiKey: 'test-admin-secret',
+      serveDashboard: false,
       providers: [
         { name: 'openai', baseUrl: 'https://openai.test/v1', apiKey: 'openai-secret', models: ['gpt-test'] },
         { name: 'groq', baseUrl: 'https://groq.test/openai/v1/', apiKey: 'groq-secret', models: ['llama-test'] },
@@ -112,6 +116,93 @@ describe('K\'sRouter API', () => {
       payload: { model: 'demo-model', messages: [] },
     });
     assert.equal(response.statusCode, 502);
-    assert.equal(response.json().error.message, 'provider unavailable');
+    assert.equal(response.json().error.message, 'The upstream provider returned HTTP 503.');
+  });
+
+  it('requires admin authentication for dashboard data APIs', async () => {
+    const app = appWithFetch(async () => Response.json({}));
+    for (const url of ['/admin/overview', '/admin/providers', '/admin/models', '/admin/requests', '/admin/settings']) {
+      const response = await app.inject({ method: 'GET', url });
+      assert.equal(response.statusCode, 401, `${url} must require authentication`);
+    }
+    const mutation = await app.inject({
+      method: 'PUT', url: '/admin/providers/new-provider',
+      payload: { baseUrl: 'https://provider.test/v1', apiKey: 'secret', models: ['new-model'] },
+    });
+    assert.equal(mutation.statusCode, 401, 'provider management must require authentication');
+    const response = await app.inject({
+      method: 'GET', url: '/admin/overview', headers: { authorization: 'Bearer test-admin-secret' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().providerCount, 1);
+  });
+
+  it('serves the dashboard shell without serving protected admin data', async () => {
+    const app = createApp({
+      adminApiKey: 'test-admin-secret',
+      providers: [],
+      fetchImpl: async () => Response.json({}),
+    });
+    apps.push(app);
+    const redirect = await app.inject({ method: 'GET', url: '/dashboard' });
+    assert.equal(redirect.statusCode, 302);
+    const dashboard = await app.inject({ method: 'GET', url: '/dashboard/' });
+    assert.equal(dashboard.statusCode, 200);
+    assert.match(dashboard.body, /K'sRouter/);
+    const admin = await app.inject({ method: 'GET', url: '/admin/providers' });
+    assert.equal(admin.statusCode, 401);
+  });
+
+  it('returns provider metadata without exposing keys and safely manages providers', async () => {
+    const app = appWithFetch(async () => Response.json({}));
+    const headers = { authorization: 'Bearer test-admin-secret' };
+    const added = await app.inject({
+      method: 'PUT', url: '/admin/providers/local', headers,
+      payload: { baseUrl: 'https://local-provider.test/v1', apiKey: 'new-provider-secret', models: ['local-model'] },
+    });
+    assert.equal(added.statusCode, 200);
+    assert.equal(JSON.stringify(added.json()).includes('new-provider-secret'), false);
+
+    const providers = await app.inject({ method: 'GET', url: '/admin/providers', headers });
+    assert.equal(providers.json().providers[1].hasApiKey, true);
+    assert.equal(JSON.stringify(providers.json()).includes('test-secret'), false);
+    assert.deepEqual((await app.inject({ method: 'GET', url: '/admin/models', headers })).json().models[1], {
+      model: 'local-model', provider: 'local',
+    });
+
+    const conflict = await app.inject({
+      method: 'PUT', url: '/admin/providers/other', headers,
+      payload: { baseUrl: 'https://other.test/v1', apiKey: 'secret', models: ['local-model'] },
+    });
+    assert.equal(conflict.statusCode, 409);
+
+    const removed = await app.inject({ method: 'DELETE', url: '/admin/providers/local', headers });
+    assert.equal(removed.statusCode, 204);
+  });
+
+  it('keeps request logs bounded and free of keys and message contents', async () => {
+    const app = createApp({
+      adminApiKey: 'test-admin-secret',
+      maxRequestLogs: 1,
+      serveDashboard: false,
+      providers: [{ name: 'default', baseUrl: 'https://provider.test/v1', apiKey: 'do-not-log-this-key', models: ['demo-model'] }],
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: 'hidden response' } }] }),
+    });
+    apps.push(app);
+    await app.inject({
+      method: 'POST', url: '/v1/chat/completions',
+      payload: { model: 'demo-model', messages: [{ role: 'user', content: 'private prompt text' }] },
+    });
+    await app.inject({
+      method: 'POST', url: '/v1/chat/completions', payload: { model: 'unrouted-model', messages: [] },
+    });
+    const logs = await app.inject({ method: 'GET', url: '/admin/requests', headers: { authorization: 'Bearer test-admin-secret' } });
+    const serialized = JSON.stringify(logs.json());
+    assert.equal(logs.json().requests.length, 1);
+    assert.equal(logs.json().requests[0].provider, '—');
+    assert.equal(logs.json().requests[0].model, 'unrouted-model');
+    assert.equal(serialized.includes('do-not-log-this-key'), false);
+    assert.equal(serialized.includes('private prompt text'), false);
+    assert.equal(serialized.includes('hidden response'), false);
   });
 });

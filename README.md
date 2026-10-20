@@ -1,26 +1,63 @@
 # K'sRouter
 
-A small OpenAI-compatible gateway built with TypeScript, Node.js, and Fastify. It routes chat completions to configured OpenAI-compatible providers by model name.
+K'sRouter is an independent, self-hosted, multi-provider AI gateway built with TypeScript, Node.js, Fastify, React, Vite, and Tailwind CSS. It routes OpenAI-compatible chat completions by model name and includes a private web dashboard.
 
-## Setup
+## Requirements
+
+- Node.js 20.6 or newer
+- An OpenAI-compatible provider endpoint and API key
+
+## Configure
 
 ```sh
 npm install
 cp .env.example .env
 ```
 
-Set `PROVIDER_IDS` to a comma-separated list of provider ids. For each id, configure `PROVIDER_<ID>_BASE_URL`, `PROVIDER_<ID>_API_KEY`, and `PROVIDER_<ID>_MODELS` (comma-separated model names). For example, the template configures OpenAI and Groq. A model can belong to only one provider. Then start the server:
+Set `ADMIN_API_KEY` to a long random secret. For example, generate one with `openssl rand -hex 32`. Set `PROVIDER_IDS` to a comma-separated list of provider IDs. For each ID, set `PROVIDER_<ID>_BASE_URL`, `PROVIDER_<ID>_API_KEY`, and `PROVIDER_<ID>_MODELS` (comma-separated exact model names). Example:
+
+```env
+PROVIDER_IDS=openai,groq
+PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
+PROVIDER_OPENAI_API_KEY=your-openai-key
+PROVIDER_OPENAI_MODELS=gpt-4o-mini,gpt-4.1-mini
+PROVIDER_GROQ_BASE_URL=https://api.groq.com/openai/v1
+PROVIDER_GROQ_API_KEY=your-groq-key
+PROVIDER_GROQ_MODELS=llama-3.3-70b-versatile
+```
+
+Each model must be assigned to one provider only. Provider configuration from the dashboard is held in memory and resets on restart; environment configuration is loaded at startup.
+
+## Run locally
+
+For development, start the API and Vite dashboard together:
 
 ```sh
 npm run dev
 ```
 
-The server listens on `0.0.0.0:3000` by default. Set `HOST` or `PORT` to change that. `GET /health` checks the server; `POST /v1/chat/completions` accepts OpenAI-compatible requests, including `stream: true` SSE requests. If no provider is configured for a requested model, the gateway returns `404 model_not_found`. The gateway does not require its own API key in this first version.
+Open <http://127.0.0.1:5173/dashboard/>. Enter `ADMIN_API_KEY` to unlock it. The dashboard keeps this key in memory only; reloads require signing in again. The Fastify API listens on `127.0.0.1:3000` by default.
+
+For a production-style run, build the dashboard and server, then serve both from Fastify:
 
 ```sh
-curl http://localhost:3000/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{"model":"your-model","messages":[{"role":"user","content":"Hi"}]}'
+npm run build
+npm start
 ```
 
-Run checks with `npm test` and `npm run build`.
+Open <http://127.0.0.1:3000/dashboard/>. The listener defaults to localhost. To access it remotely, use a private tunnel or VPN; do not expose the admin dashboard to the public internet without a trusted TLS reverse proxy and network access controls.
+
+## API
+
+- `GET /health` returns the gateway process status.
+- `POST /v1/chat/completions` accepts OpenAI-compatible JSON and `stream: true` SSE requests. The `model` value selects its configured provider. Unknown models return `404 model_not_found`.
+- Dashboard APIs under `/admin/*` require `Authorization: Bearer <ADMIN_API_KEY>`.
+
+The dashboard can list, add, edit, and remove providers; list model routes; view request metadata; and inspect runtime settings. Provider API keys are accepted by the server but never returned to the dashboard. Dashboard changes are in-memory only. Request logs retain up to 100 recent entries by default and contain only status, provider, model, timestamp, and latency—not message contents or credentials.
+
+Run the production build and automated tests with:
+
+```sh
+npm run build
+npm test
+```
