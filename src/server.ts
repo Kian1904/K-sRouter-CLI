@@ -2,6 +2,7 @@ import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
+import { ClientKeyStore } from './client-key-store.js';
 
 export interface ProviderConfig {
   name: string;
@@ -26,6 +27,7 @@ export interface RouterConfig {
   host?: string;
   port?: number;
   maxRequestLogs?: number;
+  clientKeyStorePath?: string;
   fetchImpl?: typeof fetch;
   serveDashboard?: boolean;
 }
@@ -41,6 +43,10 @@ interface ProviderUpdateBody {
   baseUrl?: unknown;
   apiKey?: unknown;
   models?: unknown;
+}
+
+interface ClientKeyCreateBody {
+  name?: unknown;
 }
 
 const DEFAULT_LOG_LIMIT = 100;
@@ -98,7 +104,9 @@ export function createApp(config: RouterConfig): FastifyInstance {
   const startedAt = Date.now();
   const fetchImpl = config.fetchImpl ?? fetch;
   const adminKeyHash = createHash('sha256').update(config.adminApiKey).digest();
+  const clientKeyStore = new ClientKeyStore(config.clientKeyStorePath ?? resolve(process.cwd(), '.data/client-keys.json'));
   const app = Fastify({ logger: false });
+  app.addHook('onReady', async () => clientKeyStore.initialize());
 
   const models = () => [...providers.values()].flatMap((provider) =>
     provider.models.map((model) => ({ model, provider: provider.name })),
@@ -121,6 +129,11 @@ export function createApp(config: RouterConfig): FastifyInstance {
   app.get('/health', async () => ({ status: 'ok' }));
 
   app.post<{ Body: ChatCompletionBody }>('/v1/chat/completions', async (request, reply) => {
+    const authorization = request.headers.authorization ?? '';
+    const clientKey = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!await clientKeyStore.authenticate(clientKey)) {
+      return reply.code(401).send(errorResponse('A valid client API key is required.', 'authentication_error'));
+    }
     const started = Date.now();
     const body = request.body;
     if (!body || typeof body !== 'object' || typeof body.model !== 'string' || !Array.isArray(body.messages)) {
@@ -228,11 +241,32 @@ export function createApp(config: RouterConfig): FastifyInstance {
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       providerCount: providers.size,
       modelCount: models().length,
+      clientKeyCount: await clientKeyStore.countActive(),
       requestCount: requestLogs.length,
       requestLogLimit: logLimit,
     }));
 
     admin.get('/providers', async () => ({ providers: [...providers.values()].map(safeProvider) }));
+
+    admin.get('/client-keys', async () => ({ clientKeys: await clientKeyStore.list() }));
+
+    admin.post<{ Body: ClientKeyCreateBody }>('/client-keys', async (request, reply) => {
+      if (typeof request.body?.name !== 'string') {
+        return reply.code(400).send(errorResponse('A client key name is required.'));
+      }
+      try {
+        return reply.code(201).send(await clientKeyStore.create(request.body.name));
+      } catch {
+        return reply.code(400).send(errorResponse('Client key name must be between 1 and 80 characters.'));
+      }
+    });
+
+    admin.delete<{ Params: { id: string } }>('/client-keys/:id', async (request, reply) => {
+      if (!await clientKeyStore.revoke(request.params.id)) {
+        return reply.code(404).send(errorResponse('Active client key not found.', 'not_found'));
+      }
+      return reply.code(204).send();
+    });
 
     admin.put<{ Params: { id: string }; Body: ProviderUpdateBody }>('/providers/:id', async (request, reply) => {
       const id = request.params.id;
@@ -262,6 +296,7 @@ export function createApp(config: RouterConfig): FastifyInstance {
       port: config.port ?? 3000,
       adminAuthentication: 'enabled',
       providerSecrets: 'server-only',
+      clientKeyStorage: 'local file with restricted permissions',
       requestLogLimit: logLimit,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
     }));

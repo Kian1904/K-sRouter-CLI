@@ -5,16 +5,17 @@ import {
   RefreshCw, Router, Search, Server, Settings2, ShieldCheck, Trash2, X,
 } from 'lucide-react';
 
-type Page = 'Overview' | 'Providers' | 'Models' | 'Request Logs' | 'Settings';
+type Page = 'Overview' | 'Providers' | 'Models' | 'Client Keys' | 'Request Logs' | 'Settings';
 type Provider = { name: string; baseUrl: string; models: string[]; hasApiKey: boolean };
 type Model = { model: string; provider: string };
+type ClientKey = { id: string; name: string; identifier: string; createdAt: string; revokedAt?: string };
 type RequestLog = {
   id: string; timestamp: string; status: 'success' | 'error'; provider: string;
   model: string; latencyMs: number; httpStatus: number;
 };
 type Overview = {
   status: string; uptimeSeconds: number; providerCount: number; modelCount: number;
-  requestCount: number; requestLogLimit: number;
+  requestCount: number; requestLogLimit: number; clientKeyCount: number;
 };
 type Settings = {
   host: string; port: number; adminAuthentication: string; providerSecrets: string;
@@ -25,6 +26,7 @@ const pages: Array<{ name: Page; icon: typeof LayoutDashboard }> = [
   { name: 'Overview', icon: LayoutDashboard },
   { name: 'Providers', icon: Server },
   { name: 'Models', icon: Cpu },
+  { name: 'Client Keys', icon: KeyRound },
   { name: 'Request Logs', icon: Activity },
   { name: 'Settings', icon: Settings2 },
 ];
@@ -64,25 +66,28 @@ function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
+  const [clientKeys, setClientKeys] = useState<ClientKey[]>([]);
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<Provider | null>(null);
   const [showProviderForm, setShowProviderForm] = useState(false);
   const [notice, setNotice] = useState('');
+  const [newKey, setNewKey] = useState('');
 
   const refresh = useCallback(async (activeToken = token) => {
     if (!activeToken) return;
     setLoading(true);
     setError('');
     try {
-      const [o, p, m, r, s] = await Promise.all([
+      const [o, p, m, k, r, s] = await Promise.all([
         request<Overview>('/admin/overview', activeToken),
         request<{ providers: Provider[] }>('/admin/providers', activeToken),
         request<{ models: Model[] }>('/admin/models', activeToken),
+        request<{ clientKeys: ClientKey[] }>('/admin/client-keys', activeToken),
         request<{ requests: RequestLog[] }>('/admin/requests', activeToken),
         request<Settings>('/admin/settings', activeToken),
       ]);
-      setOverview(o); setProviders(p.providers); setModels(m.models); setLogs(r.requests); setSettings(s);
+      setOverview(o); setProviders(p.providers); setModels(m.models); setClientKeys(k.clientKeys); setLogs(r.requests); setSettings(s);
       setToken(activeToken);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load dashboard.');
@@ -140,6 +145,30 @@ function App() {
     }
   };
 
+  const createClientKey = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await request<{ key: string; clientKey: ClientKey }>('/admin/client-keys', token, {
+        method: 'POST', body: JSON.stringify({ name: form.get('name') }),
+      });
+      setNewKey(result.key); setNotice('Client key created. Copy it now; it will only be shown once.');
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create client key.');
+    }
+  };
+
+  const revokeClientKey = async (clientKey: ClientKey) => {
+    if (!window.confirm(`Revoke the key “${clientKey.name}”? Requests using it will be rejected.`)) return;
+    try {
+      await request(`/admin/client-keys/${encodeURIComponent(clientKey.id)}`, token, { method: 'DELETE' });
+      setNotice('Client key revoked.'); await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not revoke client key.');
+    }
+  };
+
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(''), 3000);
@@ -194,6 +223,7 @@ function App() {
           {page === 'Overview' && <OverviewPage overview={overview} providers={providers} logs={logs} successRate={successRate} setPage={setPage} />}
           {page === 'Providers' && <ProvidersPage providers={providers} onAdd={() => { setEditing(null); setShowProviderForm(true); }} onEdit={(provider) => { setEditing(provider); setShowProviderForm(true); }} onDelete={deleteProvider} />}
           {page === 'Models' && <ModelsPage models={models} />}
+          {page === 'Client Keys' && <ClientKeysPage clientKeys={clientKeys} newKey={newKey} onCreate={createClientKey} onCloseKey={() => setNewKey('')} onRevoke={revokeClientKey} />}
           {page === 'Request Logs' && <LogsPage logs={logs} />}
           {page === 'Settings' && <SettingsPage settings={settings} overview={overview} />}
         </main>
@@ -260,6 +290,24 @@ function ModelsPage({ models }: { models: Model[] }) {
   </>;
 }
 
+function ClientKeysPage({ clientKeys, newKey, onCreate, onCloseKey, onRevoke }: { clientKeys: ClientKey[]; newKey: string; onCreate: (event: FormEvent<HTMLFormElement>) => void; onCloseKey: () => void; onRevoke: (clientKey: ClientKey) => void }) {
+  const [copied, setCopied] = useState(false);
+  const activeCount = clientKeys.filter((key) => !key.revokedAt).length;
+  return <>
+    <PageHeading eyebrow="CLIENT ACCESS" title="Client keys" description="Issue credentials for applications calling the chat completions API. Keys are stored as hashes and shown only once." />
+    <div className="grid gap-5 xl:grid-cols-[.7fr_1.3fr]">
+      <section className="panel h-fit"><div className="panel-heading"><div><h2 className="panel-title">Create a client key</h2><p className="panel-subtitle">Each key can be revoked independently.</p></div><KeyRound size={17} className="text-emerald-300" /></div>
+        <form onSubmit={onCreate} className="space-y-4"><label className="field-label">Key name<input name="name" required maxLength={80} placeholder="e.g. Production app" /></label><button className="primary-button w-full justify-center" type="submit"><Plus size={15} /> Generate key</button></form>
+        <div className="mt-4 rounded-lg border border-amber-400/[.12] bg-amber-400/[.035] p-3 text-xs leading-5 text-amber-100/65">Copy the generated key immediately. K&apos;sRouter cannot reveal it again.</div>
+      </section>
+      <section className="panel"><div className="panel-heading"><div><h2 className="panel-title">Issued keys <span className="ml-2 rounded-md bg-white/[.05] px-1.5 py-1 text-[10px] font-medium text-slate-500">{activeCount} active</span></h2><p className="panel-subtitle">Only names and masked identifiers are shown here.</p></div></div>
+        {clientKeys.length ? <div className="divide-y divide-white/[.045]">{[...clientKeys].reverse().map((key) => <div key={key.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3"><div className="rounded-lg border border-white/[.06] bg-white/[.03] p-2.5 text-slate-400"><KeyRound size={15} /></div><div className="min-w-0"><div className="truncate text-sm font-medium text-slate-200">{key.name}</div><div className="mt-1 font-mono text-[11px] text-slate-500">{key.identifier}</div><div className="mt-1 text-[10px] text-slate-600">Created {formatDate(key.createdAt)}</div></div></div><div className="flex items-center justify-between gap-3 sm:justify-end"><span className={`tiny-pill ${key.revokedAt ? 'opacity-50' : ''}`}><span className={key.revokedAt ? 'status-dot error' : 'live-dot'} />{key.revokedAt ? 'revoked' : 'active'}</span>{!key.revokedAt && <button className="icon-button danger" title={`Revoke ${key.name}`} onClick={() => onRevoke(key)}><Trash2 size={15} /></button>}</div></div>)}</div> : <EmptyState icon={KeyRound} title="No client keys" detail="Create a key to authorize an application to call K’sRouter." />}
+      </section>
+    </div>
+    {newKey && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCloseKey(); }}><div className="modal-card"><div className="flex items-start justify-between"><div><div className="eyebrow">ONE-TIME SECRET</div><h2 className="mt-2 text-lg font-semibold text-white">Copy your client key</h2><p className="mt-1 text-xs leading-5 text-slate-500">This key is only available in this dialog. Store it in your application’s server environment.</p></div><button onClick={onCloseKey} className="icon-button" title="Close"><X size={16} /></button></div><code className="mt-5 block break-all rounded-lg border border-white/[.07] bg-black/30 p-3 font-mono text-xs leading-5 text-emerald-200">{newKey}</code><div className="mt-5 flex flex-wrap justify-end gap-2"><button className="secondary-button" onClick={async () => { await navigator.clipboard.writeText(newKey); setCopied(true); }}><Check size={14} />{copied ? 'Copied' : 'Copy key'}</button><button className="primary-button" onClick={onCloseKey}>Done</button></div></div></div>}
+  </>;
+}
+
 function LogsPage({ logs }: { logs: RequestLog[] }) {
   const [filter, setFilter] = useState('all');
   const visible = logs.filter((log) => filter === 'all' || log.status === filter);
@@ -278,6 +326,7 @@ function SettingsPage({ settings, overview }: { settings: Settings | null; overv
   const rows = [
     ['Bind address', `${settings?.host ?? '127.0.0.1'}:${settings?.port ?? 3000}`, 'Gateway listener'],
     ['Admin authentication', 'Enabled', 'Bearer token required for all admin APIs'],
+    ['Client API keys', `${overview.clientKeyCount} active`, 'Hashed in a local file with owner-only permissions'],
     ['Provider secrets', 'Server only', 'Never returned in API responses'],
     ['Request log capacity', `${settings?.requestLogLimit ?? overview.requestLogLimit} records`, 'Old entries are removed automatically'],
     ['Provider configuration', 'Environment + memory', 'Dashboard changes reset on restart'],

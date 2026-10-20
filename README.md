@@ -14,7 +14,7 @@ npm install
 cp .env.example .env
 ```
 
-Set `ADMIN_API_KEY` to a long random secret. For example, generate one with `openssl rand -hex 32`. Set `PROVIDER_IDS` to a comma-separated list of provider IDs. For each ID, set `PROVIDER_<ID>_BASE_URL`, `PROVIDER_<ID>_API_KEY`, and `PROVIDER_<ID>_MODELS` (comma-separated exact model names). Example:
+Set `ADMIN_API_KEY` to a long random secret. For example, generate one with `openssl rand -hex 32`. This secret authenticates dashboard and admin APIs only. Set `PROVIDER_IDS` to a comma-separated list of provider IDs. For each ID, set `PROVIDER_<ID>_BASE_URL`, `PROVIDER_<ID>_API_KEY`, and `PROVIDER_<ID>_MODELS` (comma-separated exact model names). Example:
 
 ```env
 PROVIDER_IDS=openai,groq
@@ -50,10 +50,21 @@ Open <http://127.0.0.1:3000/dashboard/>. The listener defaults to localhost. To 
 ## API
 
 - `GET /health` returns the gateway process status.
-- `POST /v1/chat/completions` accepts OpenAI-compatible JSON and `stream: true` SSE requests. The `model` value selects its configured provider. Unknown models return `404 model_not_found`.
+- `POST /v1/chat/completions` requires `Authorization: Bearer <CLIENT_API_KEY>` and accepts OpenAI-compatible JSON and `stream: true` SSE requests. The `model` value selects its configured provider. Unknown models return `404 model_not_found`.
 - Dashboard APIs under `/admin/*` require `Authorization: Bearer <ADMIN_API_KEY>`.
 
-The dashboard can list, add, edit, and remove providers; list model routes; view request metadata; and inspect runtime settings. Provider API keys are accepted by the server but never returned to the dashboard. Dashboard changes are in-memory only. Request logs retain up to 100 recent entries by default and contain only status, provider, model, timestamp, and latency—not message contents or credentials.
+Use the dashboard’s **Client Keys** page to generate and revoke client credentials. The raw key is shown once at creation. Copy it immediately and provide it to your application through its server-side environment, for example `KSR_CLIENT_API_KEY`; do not put it in browser code or commit it. The gateway stores only SHA-256 hashes and masked identifiers in `CLIENT_KEY_STORE_PATH` (default `.data/client-keys.json`). The directory and file are restricted to the current OS user (`0700` and `0600` on POSIX), and records persist across restarts. Keep this file private and back it up securely if needed. Client keys cannot authenticate admin endpoints, and the admin key cannot authenticate chat requests.
+
+Example request:
+
+```sh
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer $KSR_CLIENT_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+The dashboard can list, add, edit, and remove providers; manage client keys; list model routes; view request metadata; and inspect runtime settings. Provider API keys are accepted by the server but never returned to the dashboard. Provider dashboard changes are in-memory only. Request logs retain up to 100 recent entries by default and contain only status, provider, model, timestamp, and latency—not message contents or credentials.
 
 Run the production build and automated tests with:
 
