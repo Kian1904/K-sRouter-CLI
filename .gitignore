@@ -40,3 +40,4 @@ google-services.json
 
 # Node
 node_modules/
+dist/
