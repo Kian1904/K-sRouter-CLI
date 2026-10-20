@@ -5,7 +5,12 @@ import { createApp } from '../src/server.js';
 const apps: Array<ReturnType<typeof createApp>> = [];
 
 function appWithFetch(fetchImpl: typeof fetch) {
-  const app = createApp({ baseUrl: 'https://provider.test/v1/', apiKey: 'test-secret', fetchImpl });
+  const app = createApp({
+    providers: [{
+      name: 'default', baseUrl: 'https://provider.test/v1/', apiKey: 'test-secret', models: ['demo-model'],
+    }],
+    fetchImpl,
+  });
   apps.push(app);
   return app;
 }
@@ -40,6 +45,42 @@ describe('K\'sRouter API', () => {
     assert.equal(new Headers(receivedHeaders).get('authorization'), 'Bearer test-secret');
     assert.deepEqual(JSON.parse(receivedBody), payload);
     assert.equal(response.json().choices[0].message.content, 'Hello');
+  });
+
+  it('routes each configured model to its provider URL and API key', async () => {
+    const received: Array<{ url: string; authorization: string | null }> = [];
+    const app = createApp({
+      providers: [
+        { name: 'openai', baseUrl: 'https://openai.test/v1', apiKey: 'openai-secret', models: ['gpt-test'] },
+        { name: 'groq', baseUrl: 'https://groq.test/openai/v1/', apiKey: 'groq-secret', models: ['llama-test'] },
+      ],
+      fetchImpl: async (input, init) => {
+        received.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
+        return Response.json({ choices: [{ message: { role: 'assistant', content: 'ok' } }] });
+      },
+    });
+    apps.push(app);
+
+    for (const model of ['gpt-test', 'llama-test']) {
+      const response = await app.inject({
+        method: 'POST', url: '/v1/chat/completions', payload: { model, messages: [] },
+      });
+      assert.equal(response.statusCode, 200);
+    }
+
+    assert.deepEqual(received, [
+      { url: 'https://openai.test/v1/chat/completions', authorization: 'Bearer openai-secret' },
+      { url: 'https://groq.test/openai/v1/chat/completions', authorization: 'Bearer groq-secret' },
+    ]);
+  });
+
+  it('returns model_not_found when no provider owns the requested model', async () => {
+    const app = appWithFetch(async () => { throw new Error('must not call provider'); });
+    const response = await app.inject({
+      method: 'POST', url: '/v1/chat/completions', payload: { model: 'unknown-model', messages: [] },
+    });
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.json().error.type, 'model_not_found');
   });
 
   it('streams provider event bytes through to the client', async () => {
