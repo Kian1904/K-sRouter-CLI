@@ -51,7 +51,6 @@ export class ClientKeyStore {
     if (this.initialized) return;
     const directory = dirname(this.filePath);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    await chmod(directory, 0o700);
     try {
       const content = await readFile(this.filePath, 'utf8');
       const parsed: unknown = JSON.parse(content);
