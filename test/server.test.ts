@@ -71,11 +71,20 @@ describe('K\'sRouter API', () => {
     assert.equal((await chat(app, clientKey, payload)).statusCode, 200);
     assert.equal(calls, 1);
 
+    const secondKeyResponse = await app.inject({
+      method: 'POST', url: '/admin/client-keys', headers: adminHeaders(), payload: { name: 'second client' },
+    });
+    const secondClientKey = secondKeyResponse.json().key as string;
+    assert.equal(secondKeyResponse.statusCode, 201);
+    assert.equal((await chat(app, secondClientKey, payload)).statusCode, 200);
+    assert.equal(calls, 2);
+
     const clientKeys = (await app.inject({ method: 'GET', url: '/admin/client-keys', headers: adminHeaders() })).json().clientKeys;
     const keyId = clientKeys.find((item: { name: string }) => item.name === 'test client').id;
     const revoked = await app.inject({ method: 'DELETE', url: `/admin/client-keys/${keyId}`, headers: adminHeaders() });
     assert.equal(revoked.statusCode, 204);
     assert.equal((await chat(app, clientKey, payload)).statusCode, 401);
+    assert.equal((await chat(app, secondClientKey, payload)).statusCode, 200, 'revoking one key must not revoke other keys');
   });
 
   it('forwards non-streaming OpenAI-compatible requests and responses with client auth', async () => {
