@@ -9,10 +9,15 @@
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "test": "npm run build && node --test dist/test/*.test.js"
   },
-  "dependencies": { "fastify": "^5.2.1" },
+  "dependencies": {
+    "fastify": "^5.2.1"
+  },
   "devDependencies": {
     "@types/node": "^22.13.4",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
   }
 }
