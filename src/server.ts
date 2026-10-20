@@ -1,8 +1,14 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
-export interface RouterConfig {
+export interface ProviderConfig {
+  name: string;
   baseUrl: string;
   apiKey: string;
+  models: string[];
+}
+
+export interface RouterConfig {
+  providers: ProviderConfig[];
   fetchImpl?: typeof fetch;
 }
 
@@ -18,7 +24,13 @@ function errorResponse(message: string, type = 'invalid_request_error') {
 }
 
 export function createApp(config: RouterConfig): FastifyInstance {
-  const baseUrl = config.baseUrl.replace(/\/+$/, '');
+  const modelRoutes = new Map<string, ProviderConfig>();
+  for (const provider of config.providers) {
+    for (const model of provider.models) {
+      if (modelRoutes.has(model)) throw new Error(`Model "${model}" is configured for more than one provider.`);
+      modelRoutes.set(model, provider);
+    }
+  }
   const fetchImpl = config.fetchImpl ?? fetch;
   const app = Fastify({ logger: false });
 
@@ -32,6 +44,10 @@ export function createApp(config: RouterConfig): FastifyInstance {
     if (body.stream !== undefined && typeof body.stream !== 'boolean') {
       return reply.code(400).send(errorResponse('The stream field must be a boolean.'));
     }
+    const provider = modelRoutes.get(body.model);
+    if (!provider) {
+      return reply.code(404).send(errorResponse(`No provider is configured for model "${body.model}".`, 'model_not_found'));
+    }
 
     const abortController = new AbortController();
     const abortUpstream = () => {
@@ -42,10 +58,10 @@ export function createApp(config: RouterConfig): FastifyInstance {
 
     let upstream: Response;
     try {
-      upstream = await fetchImpl(`${baseUrl}/chat/completions`, {
+      upstream = await fetchImpl(`${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${config.apiKey}`,
+          authorization: `Bearer ${provider.apiKey}`,
           'content-type': 'application/json',
           accept: body.stream === true ? 'text/event-stream' : 'application/json',
         },
@@ -108,11 +124,26 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const app = createApp({
-    baseUrl: requiredEnv('UPSTREAM_BASE_URL'),
-    apiKey: requiredEnv('UPSTREAM_API_KEY'),
+function providersFromEnv(): ProviderConfig[] {
+  const ids = requiredEnv('PROVIDER_IDS').split(',').map((id) => id.trim()).filter(Boolean);
+  if (ids.length === 0) throw new Error('PROVIDER_IDS must contain at least one provider id.');
+
+  return ids.map((id) => {
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error(`Invalid provider id: ${id}`);
+    const prefix = `PROVIDER_${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    const models = requiredEnv(`${prefix}_MODELS`).split(',').map((model) => model.trim()).filter(Boolean);
+    if (models.length === 0) throw new Error(`${prefix}_MODELS must contain at least one model.`);
+    return {
+      name: id,
+      baseUrl: requiredEnv(`${prefix}_BASE_URL`),
+      apiKey: requiredEnv(`${prefix}_API_KEY`),
+      models,
+    };
   });
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const app = createApp({ providers: providersFromEnv() });
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? '0.0.0.0';
   await app.listen({ port, host });
