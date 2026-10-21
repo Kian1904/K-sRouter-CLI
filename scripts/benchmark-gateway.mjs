@@ -8,6 +8,7 @@ const app = createApp({
 });
 let peakRss = process.memoryUsage().rss;
 let peakHeap = process.memoryUsage().heapUsed;
+let acceptedConnections = 0;
 let sampleTimer;
 let timelineTimer;
 const sample = () => {
@@ -20,6 +21,7 @@ await app.ready();
 const created = await app.inject({ method: 'POST', url: '/admin/client-keys', headers: { authorization: 'Bearer benchmark-admin-secret' }, payload: { name: 'benchmark' } });
 if (created.statusCode !== 201) throw new Error(`Could not provision benchmark key: ${created.statusCode}`);
 await app.listen({ host: '127.0.0.1', port: 0 });
+app.server.on('connection', () => { acceptedConnections++; });
 sampleTimer = setInterval(sample, 20);
 timelineTimer = setInterval(() => {
   const memory = process.memoryUsage();
@@ -34,12 +36,12 @@ process.on('message', async (message) => {
       const current = process.memoryUsage();
       peakRss = current.rss;
       peakHeap = current.heapUsed;
-      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap } });
+      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap }, acceptedConnections });
     } else {
       sample();
       global.gc?.();
       const current = process.memoryUsage();
-      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap } });
+      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap }, acceptedConnections });
     }
   }
 });

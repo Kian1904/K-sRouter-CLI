@@ -122,6 +122,7 @@ try {
   await delay(50);
   const { type: _afterType, ...afterDisconnect } = await command(mock, { type: 'snapshot' });
   const { type: _countsType, ...counts } = await command(mock, { type: 'snapshot' });
+  const gatewayCounts = await command(gateway, { type: 'memory', action: 'snapshot' });
   const measuredRequests = cases.reduce((sum, entry) => sum + entry.direct.completed + entry.throughGateway.completed, 0);
   console.log(JSON.stringify({
     benchmark: "K'sRouter three-process local baseline",
@@ -136,7 +137,7 @@ try {
       sse: 'TTFE is measured from fetch start until the first complete SSE event; total duration runs through [DONE] and response close.',
       memory: 'RSS and heap are sampled inside the gateway child process only. End heap uses explicit GC when Node was started with --expose-gc. Direct baseline memory is not included.',
     },
-    mockConnectionStats: counts,
+    connectionStats: { gatewayAcceptedTotal: gatewayCounts.acceptedConnections, ...counts },
     disconnectCheck: { ...disconnect, mockDisconnectCountBefore: beforeDisconnect.abortedResponses, mockDisconnectCountAfter: afterDisconnect.abortedResponses, upstreamCancelled: afterDisconnect.abortedResponses > beforeDisconnect.abortedResponses },
     cases,
   }, null, 2));
