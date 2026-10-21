@@ -75,13 +75,15 @@ npm test
 
 ## Performance baseline (local mock)
 
-The benchmark starts a local mock OpenAI-compatible upstream and a K'sRouter instance on loopback. It does not call a model provider or use API credits. It warms up both response types, then measures non-streaming and SSE requests at each concurrency level. Output is JSON and includes client-observed p50/p95/p99 latency, throughput, errors, mock handler time, an estimated router/loopback overhead, whole-process memory, and a client-disconnect cancellation check.
+The benchmark runs the mock upstream, K'sRouter, and load generator as three separate Node processes on loopback. It does not call a model provider or use API credits. For every response type and concurrency level, it first calls the mock directly, then through K'sRouter using the same request count or soak duration, payload size, and response fixture. Output is JSON with throughput, error rate, p50/p95/p99/mean latency, gateway-only RSS and heap samples, and TCP connection counts. SSE also reports time to first complete event (TTFE) separately from total time through `[DONE]`.
+
+`gatewayAddedLatencyMs` is the difference between the gateway and direct-mock latency distributions for equivalent workloads (for example, gateway p95 minus direct p95). The runs are sequential and the percentiles are not paired request-by-request, so treat small differences as noise and repeat runs. This comparison avoids attributing mock handler time as gateway overhead, but still includes loopback, HTTP, and process scheduling differences. The direct run shares the mock process but not the gateway. Gateway memory is measured in the gateway child itself; end heap uses explicit GC. During a soak, a one-second RSS/heap time series is also returned. A post-GC end reading is useful for retained heap, while RSS can remain high because of allocator and runtime behavior.
 
 On Linux/macOS, install dependencies and run:
 
 ```sh
 npm install
-npm run benchmark -- --requests 500 --warmup 30 --concurrency 1,10,25,50 --response-kb 16 --stream-chunks 8
+npm run benchmark -- --requests 300 --warmup 20 --concurrency 1,5,10,20 --response-kb 8 --stream-chunks 8
 ```
 
 Termux setup:
@@ -91,7 +93,9 @@ pkg update
 pkg install nodejs-lts
 cd ~/K-sRouter-CLI
 npm install
-npm run benchmark -- --requests 300 --warmup 20 --concurrency 1,5,10,20 --response-kb 8 --stream-chunks 8
+npm run benchmark -- --requests 100 --warmup 10 --concurrency 1,5,10,20 --response-kb 8 --stream-chunks 8
 ```
 
-Options are per-case request count, warmups per response type, comma-separated concurrency levels, mock JSON/SSE response payload size in KiB, and SSE chunk count. Start with lower concurrency on phones; close other heavy apps and rerun at least three times before comparing changes. Use the same Node version and device state for comparisons. The process memory figures include the gateway, mock server, and load generator; they are not isolated gateway RSS. The overhead field is an estimate (client latency minus mock upstream handler time) and includes loopback HTTP/network and body handling. Neither number should be interpreted as a production capacity guarantee. The SSE check aborts the client after its first event and reports whether the upstream response observes the cancellation.
+Options are per-case requests, warmups per target, comma-separated concurrency levels (defaults to `1,5,10,20`), response size in KiB, SSE chunk count, and optional `--soak-seconds`. A soak duration applies to each direct and gateway run for every response type and concurrency level; e.g. `--concurrency 10 --soak-seconds 120` runs four two-minute workloads, plus warmups and the cancellation probe. On phones, run with the device plugged in, close heavy apps, and repeat at least three times at the same temperature and power mode before comparing changes. A soak's memory series can show growth during its run, but it cannot prove a leak by itself; compare repeated runs and inspect post-GC heap. The SSE probe aborts the client after its first event and verifies that the mock upstream sees its response connection close.
+
+The benchmark is a local baseline, not a production capacity guarantee. OS scheduling, Node version, thermal throttling, socket reuse, and small sample counts affect results. Direct and gateway measurements are sequential rather than randomized or paired; keep payloads, Node version, device state, and concurrency identical when comparing revisions.
