@@ -6,15 +6,18 @@ const app = createApp({
   clientKeyStorePath: process.env.CLIENT_KEY_STORE_PATH,
   host: '127.0.0.1', port: 0, maxRequestLogs: 100,
 });
-let peakRss = process.memoryUsage().rss;
-let peakHeap = process.memoryUsage().heapUsed;
+const memoryFields = ['rss', 'heapUsed', 'heapTotal', 'external', 'arrayBuffers'];
+const readMemory = () => {
+  const memory = process.memoryUsage();
+  return Object.fromEntries(memoryFields.map((field) => [field, memory[field]]));
+};
+let peak = readMemory();
 let acceptedConnections = 0;
 let sampleTimer;
 let timelineTimer;
 const sample = () => {
-  const memory = process.memoryUsage();
-  peakRss = Math.max(peakRss, memory.rss);
-  peakHeap = Math.max(peakHeap, memory.heapUsed);
+  const memory = readMemory();
+  for (const field of memoryFields) peak[field] = Math.max(peak[field], memory[field]);
 };
 
 await app.ready();
@@ -24,8 +27,7 @@ await app.listen({ host: '127.0.0.1', port: 0 });
 app.server.on('connection', () => { acceptedConnections++; });
 sampleTimer = setInterval(sample, 20);
 timelineTimer = setInterval(() => {
-  const memory = process.memoryUsage();
-  process.send?.({ type: 'memory-sample', sample: { at: Date.now(), rss: memory.rss, heapUsed: memory.heapUsed } });
+  process.send?.({ type: 'memory-sample', sample: { at: Date.now(), ...readMemory() } });
 }, 1000);
 process.send?.({ type: 'ready', pid: process.pid, baseUrl: `http://127.0.0.1:${app.server.address().port}`, clientKey: created.json().key });
 
@@ -33,15 +35,14 @@ process.on('message', async (message) => {
   if (message?.type === 'memory') {
     if (message.action === 'reset') {
       global.gc?.();
-      const current = process.memoryUsage();
-      peakRss = current.rss;
-      peakHeap = current.heapUsed;
-      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap }, acceptedConnections });
+      const current = readMemory();
+      peak = { ...current };
+      process.send?.({ type: 'result', current, peak: { ...peak }, acceptedConnections });
     } else {
       sample();
       global.gc?.();
-      const current = process.memoryUsage();
-      process.send?.({ type: 'result', current, peak: { rss: peakRss, heapUsed: peakHeap }, acceptedConnections });
+      const current = readMemory();
+      process.send?.({ type: 'result', current, peak: { ...peak }, acceptedConnections });
     }
   }
 });

@@ -15,6 +15,11 @@ const warmupCount = Number(option('warmup', '20'));
 const streamChunks = Number(option('stream-chunks', '8'));
 const responseKb = Number(option('response-kb', '8'));
 const soakSeconds = Number(option('soak-seconds', '0'));
+const kindOption = option('kind', 'both');
+const kinds = kindOption === 'both' ? ['non-streaming', 'sse'] : [kindOption];
+if (kinds.some((kind) => !['non-streaming', 'sse'].includes(kind))) {
+  throw new Error('--kind must be non-streaming, sse, or both.');
+}
 if ([...concurrencyLevels, requestCount, warmupCount, streamChunks, responseKb].some((n) => !Number.isInteger(n) || n < 1)
   || !Number.isFinite(soakSeconds) || soakSeconds < 0) {
   throw new Error('Use positive integer counts and a non-negative --soak-seconds value.');
@@ -54,31 +59,29 @@ const command = (child, message, expected = 'result', timeoutMs = 120_000) => {
   child.send(message);
   return result;
 };
-const summarize = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)] : null;
-  const mean = sorted.length ? sorted.reduce((sum, value) => sum + value, 0) / sorted.length : null;
-  return { p50: at(0.5), p95: at(0.95), p99: at(0.99), mean };
-};
-
 const tempDir = await mkdtemp(join(tmpdir(), 'ksrouter-perf-'));
 let mock;
 let gateway;
 let load;
+const gatewayProcesses = [];
+let lastGatewayCounts;
+let disconnectCheck;
 try {
   mock = startChild('mock', { RESPONSE_KB: String(responseKb), STREAM_CHUNKS: String(streamChunks) });
   const mockReady = await waitMessage(mock, 'ready');
-  gateway = startChild('gateway', {
-    MOCK_BASE_URL: mockReady.baseUrl,
-    CLIENT_KEY_STORE_PATH: join(tempDir, 'client-keys.json'),
-  });
-  const gatewayReady = await waitMessage(gateway, 'ready');
   load = startChild('load');
 
   const baseLoad = { requestCount, warmupCount, streamChunks, responseKb, soakSeconds };
   const workloadTimeoutMs = soakSeconds ? (soakSeconds + 180) * 1000 : 120_000;
   const cases = [];
-  for (const kind of ['non-streaming', 'sse']) {
+  for (const kind of kinds) {
+    // A new gateway for each response type prevents JSON state from contaminating SSE measurements.
+    gateway = startChild('gateway', {
+      MOCK_BASE_URL: mockReady.baseUrl,
+      CLIENT_KEY_STORE_PATH: join(tempDir, `client-keys-${kind}.json`),
+    });
+    const gatewayReady = await waitMessage(gateway, 'ready');
+    gatewayProcesses.push({ kind, pid: gatewayReady.pid });
     for (const concurrency of concurrencyLevels) {
       const common = { ...baseLoad, kind, concurrency };
       const direct = await command(load, { type: 'run', config: { ...common, targetUrl: `${mockReady.baseUrl}/v1/chat/completions` } }, 'result', workloadTimeoutMs);
@@ -91,6 +94,8 @@ try {
         ...common, targetUrl: `${gatewayReady.baseUrl}/v1/chat/completions`, clientKey: gatewayReady.clientKey,
       } }, 'result', workloadTimeoutMs);
       gateway.off('message', onMemory);
+      const memoryImmediate = await command(gateway, { type: 'memory', action: 'snapshot' });
+      await delay(1000);
       const memoryEnd = await command(gateway, { type: 'memory', action: 'snapshot' });
 
       cases.push({
@@ -103,42 +108,46 @@ try {
           mean: routed.latencyMs.mean - direct.latencyMs.mean,
         },
         gatewayMemoryBytes: {
-          startRss: memoryStart.current.rss,
-          peakRss: memoryEnd.peak.rss,
-          endRss: memoryEnd.current.rss,
-          startHeapUsed: memoryStart.current.heapUsed,
-          peakHeapUsed: memoryEnd.peak.heapUsed,
-          endHeapUsedAfterGc: memoryEnd.current.heapUsed,
-          rssGrowth: memoryEnd.current.rss - memoryStart.current.rss,
-          heapGrowthAfterGc: memoryEnd.current.heapUsed - memoryStart.current.heapUsed,
+          fields: 'rss, heapUsed, heapTotal, external, and arrayBuffers; arrayBuffers is included in external.',
+          start: memoryStart.current,
+          peak: memoryEnd.peak,
+          immediateAfterGc: memoryImmediate.current,
+          settledAfterGc: memoryEnd.current,
+          growthAfterGc: Object.fromEntries(Object.keys(memoryEnd.current).map((field) => [field, memoryEnd.current[field] - memoryStart.current[field]])),
           soakSamples: timeline,
         },
       });
     }
+    if (kind === 'sse') {
+      const { type: _beforeType, ...beforeDisconnect } = await command(mock, { type: 'snapshot' });
+      const { type: _disconnectType, ...disconnect } = await command(load, { type: 'disconnect', targetUrl: `${gatewayReady.baseUrl}/v1/chat/completions`, clientKey: gatewayReady.clientKey });
+      await delay(50);
+      const { type: _afterType, ...afterDisconnect } = await command(mock, { type: 'snapshot' });
+      disconnectCheck = { ...disconnect, mockDisconnectCountBefore: beforeDisconnect.abortedResponses, mockDisconnectCountAfter: afterDisconnect.abortedResponses, upstreamCancelled: afterDisconnect.abortedResponses > beforeDisconnect.abortedResponses };
+    }
+    lastGatewayCounts = await command(gateway, { type: 'memory', action: 'snapshot' });
+    gateway.kill('SIGTERM');
+    await new Promise((resolve) => gateway.once('exit', resolve));
+    gateway = undefined;
   }
 
-  const { type: _beforeType, ...beforeDisconnect } = await command(mock, { type: 'snapshot' });
-  const { type: _disconnectType, ...disconnect } = await command(load, { type: 'disconnect', targetUrl: `${gatewayReady.baseUrl}/v1/chat/completions`, clientKey: gatewayReady.clientKey });
-  await delay(50);
-  const { type: _afterType, ...afterDisconnect } = await command(mock, { type: 'snapshot' });
   const { type: _countsType, ...counts } = await command(mock, { type: 'snapshot' });
-  const gatewayCounts = await command(gateway, { type: 'memory', action: 'snapshot' });
   const measuredRequests = cases.reduce((sum, entry) => sum + entry.direct.completed + entry.throughGateway.completed, 0);
   console.log(JSON.stringify({
     benchmark: "K'sRouter three-process local baseline",
     generatedAt: new Date().toISOString(),
-    processes: { gatewayPid: gatewayReady.pid, mockUpstreamPid: mockReady.pid, loadGeneratorPid: load.pid },
+    processes: { gateways: gatewayProcesses, mockUpstreamPid: mockReady.pid, loadGeneratorPid: load.pid },
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     parameters: { concurrencyLevels, requestsPerCase: soakSeconds ? null : requestCount, soakSecondsPerCase: soakSeconds || null, warmupPerTarget: warmupCount, responseKb, streamChunks },
     measuredRequests,
     measurement: {
       directBaseline: 'Load generator calls the mock server directly with the same payload, concurrency, response size, and stream fixture as the gateway case.',
       addedLatency: 'Same-workload distribution deltas (gateway p50/p95/p99/mean minus direct baseline p50/p95/p99/mean). Runs are sequential, not paired request-by-request.',
-      sse: 'TTFE is measured from fetch start until the first complete SSE event; total duration runs through [DONE] and response close.',
-      memory: 'RSS and heap are sampled inside the gateway child process only. End heap uses explicit GC when Node was started with --expose-gc. Direct baseline memory is not included.',
+      sse: 'TTFE is measured from fetch start until the first complete SSE event. afterFirstEventMs is the same request total duration minus TTFE; total duration runs through [DONE] and response close.',
+      memory: 'RSS, heapUsed, heapTotal, external, and arrayBuffers are sampled inside the gateway child process only. End values use explicit GC when Node was started with --expose-gc. Each kind uses a fresh gateway process; direct baseline memory is not included. arrayBuffers is part of external, so do not sum them.',
     },
-    connectionStats: { gatewayAcceptedTotal: gatewayCounts.acceptedConnections, ...counts },
-    disconnectCheck: { ...disconnect, mockDisconnectCountBefore: beforeDisconnect.abortedResponses, mockDisconnectCountAfter: afterDisconnect.abortedResponses, upstreamCancelled: afterDisconnect.abortedResponses > beforeDisconnect.abortedResponses },
+    connectionStats: { gatewayAcceptedTotal: lastGatewayCounts.acceptedConnections, ...counts },
+    disconnectCheck,
     cases,
   }, null, 2));
 } finally {

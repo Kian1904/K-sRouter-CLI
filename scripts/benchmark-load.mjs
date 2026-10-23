@@ -42,7 +42,8 @@ async function request(targetUrl, clientKey, config, id) {
   if (remainder) { /* bytes already read after first event are consumed, not buffered further */ }
   while (!(await reader.read()).done) { /* stream through to [DONE] without retaining chunks */ }
   reader.releaseLock();
-  return { latencyMs: performance.now() - started, timeToFirstEventMs };
+  const latencyMs = performance.now() - started;
+  return { latencyMs, timeToFirstEventMs, afterFirstEventMs: latencyMs - timeToFirstEventMs };
 }
 
 async function run(config) {
@@ -58,6 +59,7 @@ async function run(config) {
   let errors = 0;
   const latencies = [];
   const firstEvents = [];
+  const afterFirstEvents = [];
   const workers = Array.from({ length: config.concurrency }, async () => {
     while (config.soakSeconds ? performance.now() < endAt : cursor < config.requestCount) {
       const index = cursor++;
@@ -66,6 +68,7 @@ async function run(config) {
         const value = await request(target, config.clientKey, config, id);
         latencies.push(value.latencyMs);
         if (value.timeToFirstEventMs !== undefined) firstEvents.push(value.timeToFirstEventMs);
+        if (value.afterFirstEventMs !== undefined) afterFirstEvents.push(value.afterFirstEventMs);
         completed++;
       } catch {
         errors++;
@@ -79,7 +82,10 @@ async function run(config) {
     errorRatePercent: completed + errors ? errors / (completed + errors) * 100 : 0,
     durationMs, throughputRps: completed / (durationMs / 1000),
     latencyMs: percentileSummary(latencies),
-    ...(config.kind === 'sse' ? { timeToFirstEventMs: percentileSummary(firstEvents) } : {}),
+    ...(config.kind === 'sse' ? {
+      timeToFirstEventMs: percentileSummary(firstEvents),
+      afterFirstEventMs: percentileSummary(afterFirstEvents),
+    } : {}),
   };
 }
 
